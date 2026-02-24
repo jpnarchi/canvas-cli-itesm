@@ -7,12 +7,18 @@
    ╚═════╝╚═╝  ╚═╝╚═╝  ╚═══╝  ╚═══╝  ╚═╝  ╚═╝╚══════╝  CLI
 ```
 
-A command-line client for **Canvas LMS** written in Go. Manage your courses, assignments, grades, discussions, files, and more — entirely from the terminal.
+A command-line client for **Canvas LMS (Experiencia21)** written in Go, built specifically for **Tecnologico de Monterrey** students.
+
+I'm a student at Tec de Monterrey and I built this so I could access Canvas (Experiencia21) directly from [OpenClaw](https://openclaw.com) and the terminal, without needing to open a browser.
+
+> **Important:** This version only works for Tec de Monterrey students using `experiencia21.tec.mx`. It handles the full Tec SAML SSO chain (amfs.tec.mx + aamfa.tec.mx + TOTP). If you're looking for a universal Canvas CLI that works with any institution, see [canvas-cli-general](https://github.com/jpnarchi/canvas-cli-general).
 
 ## Features
 
-- Full SAML SSO authentication (with TOTP/MFA support)
-- Session caching — login once, reuse until session expires
+- Full Tec de Monterrey SAML SSO authentication (amfs.tec.mx IdP)
+- Automatic device fingerprinting (JWS signed + JWE encrypted)
+- TOTP/MFA support — prompts for your authenticator code
+- Session caching — login once, reuse until session expires (no TOTP on every run)
 - 20+ commands covering courses, assignments, grades, submissions, modules, discussions, files, calendar, and more
 - Color-coded output with human-readable formatting
 - `--json` flag on any command for scripting/piping
@@ -21,7 +27,8 @@ A command-line client for **Canvas LMS** written in Go. Manage your courses, ass
 ## Requirements
 
 - Go 1.21+ (for building from source)
-- A Canvas LMS account with SAML SSO login
+- A Tec de Monterrey student account (e.g., `a01234567@tec.mx`)
+- Your TOTP authenticator app configured for Tec de Monterrey MFA
 
 ## Installation
 
@@ -38,8 +45,11 @@ sudo ln -s $(pwd)/canvas-cli /usr/local/bin/canvas-cli
 ## Quick Start
 
 ```bash
-# 1. Configure your Canvas URL and credentials
+# 1. Configure with your Tec credentials
 canvas-cli configure
+# Canvas URL: https://experiencia21.tec.mx
+# Username: a01234567@tec.mx
+# Password: your password
 
 # 2. Verify login (will prompt for TOTP code on first run)
 canvas-cli whoami
@@ -131,18 +141,22 @@ After the first successful login, your session is cached — subsequent commands
 | `--per-page <n>` | Results per page, default 50 |
 | `-h, --help` | Show help |
 
-## Authentication Flow
+## Authentication Flow (Tec de Monterrey)
 
-This CLI handles the full SAML SSO chain automatically:
+This CLI handles the full Tec SAML SSO chain automatically:
 
-1. Canvas redirects to your institution's Identity Provider (IdP)
-2. Credentials are submitted (password is Base64-encoded per IdP requirements)
-3. Device fingerprinting is handled (JWS signed + JWE encrypted)
-4. TOTP/MFA code is prompted interactively
-5. SAMLResponse is posted back to Canvas
-6. Session cookies are saved to `~/.canvas-cli/config.json`
+1. `experiencia21.tec.mx/login` redirects via SAML to `amfs.tec.mx` (NetIQ IdP)
+2. Auto-submit intermediate form to load the credential page
+3. Credentials submitted with Base64-encoded password (`itesm64` field)
+4. Device fingerprinting handled (JWS HS256 signed + JWE A128CBC-HS256 encrypted)
+5. OAuth2 redirect to `aamfa.tec.mx` for MFA
+6. **TOTP code prompted** — enter from your authenticator app
+7. Consent form auto-submitted
+8. JavaScript redirect followed to generate SAMLResponse
+9. SAMLResponse posted back to Canvas → session established
+10. Session cookies saved to `~/.canvas-cli/config.json` for reuse
 
-On subsequent runs, saved cookies are tested first. If still valid, no login is required. If expired, the full flow runs again.
+On subsequent runs, saved cookies are tested first. If still valid, no login is needed.
 
 ## Configuration
 
@@ -150,8 +164,8 @@ Config is stored at `~/.canvas-cli/config.json` with `0600` permissions:
 
 ```json
 {
-  "api_url": "https://yourschool.instructure.com",
-  "username": "you@school.edu",
+  "api_url": "https://experiencia21.tec.mx",
+  "username": "a01234567@tec.mx",
   "password": "yourpassword",
   "cookies": [...]
 }
