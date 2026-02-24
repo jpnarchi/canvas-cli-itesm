@@ -203,6 +203,10 @@ canvas-cli/
 └── README.md
 ```
 
+## Canvas API Documentation
+
+This CLI is built on top of the [Canvas LMS REST API](https://developerdocs.instructure.com/services/canvas).
+
 ## License
 
 MIT
