@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
@@ -11,10 +12,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -860,6 +863,25 @@ func (c *Client) ensureLoggedIn() error {
 	return c.Login()
 }
 
+// csrfToken returns the CSRF token Canvas expects in the X-CSRF-Token header
+// for cookie-authenticated mutating requests. Canvas stores it URL-encoded in
+// the _csrf_token cookie; the header wants the decoded value.
+func (c *Client) csrfToken() string {
+	siteURL, err := url.Parse(c.SiteURL)
+	if err != nil || siteURL == nil {
+		return ""
+	}
+	for _, cookie := range c.HTTPClient.Jar.Cookies(siteURL) {
+		if cookie.Name == "_csrf_token" {
+			if decoded, err := url.QueryUnescape(cookie.Value); err == nil {
+				return decoded
+			}
+			return cookie.Value
+		}
+	}
+	return ""
+}
+
 func (c *Client) request(method, endpoint string, body io.Reader, contentType string) ([]byte, error) {
 	if err := c.ensureLoggedIn(); err != nil {
 		return nil, err
@@ -882,6 +904,15 @@ func (c *Client) request(method, endpoint string, body io.Reader, contentType st
 	req.Header.Set("Accept", "application/json")
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
+	}
+
+	// Cookie-based sessions require a CSRF token on all mutating requests
+	// (POST/PUT/DELETE). Canvas stores it in the _csrf_token cookie and
+	// expects the URL-decoded value in the X-CSRF-Token header.
+	if method != "GET" && method != "HEAD" {
+		if token := c.csrfToken(); token != "" {
+			req.Header.Set("X-CSRF-Token", token)
+		}
 	}
 
 	resp, err := c.HTTPClient.Do(req)
@@ -971,6 +1002,194 @@ func (c *Client) GetPaginated(endpoint string) ([]json.RawMessage, error) {
 		page++
 	}
 	return all, nil
+}
+
+// UploadResult holds the outcome of a Canvas file upload.
+type UploadResult struct {
+	ID          int    `json:"id"`
+	DisplayName string `json:"display_name"`
+	Filename    string `json:"filename"`
+	Size        int    `json:"size"`
+	ContentType string `json:"content-type"`
+}
+
+// UploadFile performs Canvas's 3-step file upload against the given "files"
+// endpoint (e.g. /courses/:id/assignments/:id/submissions/self/files) and
+// returns the resulting file object. It does NOT submit anything — it only
+// places the file into the user's Canvas storage so it can later be attached.
+//
+// Step 1: notify Canvas of the incoming upload (name/size/content_type) →
+//         receive an upload_url and a set of upload_params.
+// Step 2: POST the actual file (multipart) to upload_url with those params.
+// Step 3: if Canvas responds with a redirect, GET it to confirm and obtain the
+//         final file object.
+func (c *Client) UploadFile(endpoint, filePath string) (*UploadResult, error) {
+	if err := c.ensureLoggedIn(); err != nil {
+		return nil, err
+	}
+
+	fi, err := os.Stat(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("reading file: %w", err)
+	}
+	if fi.IsDir() {
+		return nil, fmt.Errorf("%s is a directory, not a file", filePath)
+	}
+
+	name := filepath.Base(filePath)
+
+	// Step 1: notify Canvas of the pending upload.
+	initForm := url.Values{
+		"name": {name},
+		"size": {fmt.Sprintf("%d", fi.Size())},
+	}
+	if ct := mimeTypeFor(name); ct != "" {
+		initForm.Set("content_type", ct)
+	}
+
+	c.debugf("Upload step 1: POST %s (name=%s, size=%d)", endpoint, name, fi.Size())
+	initData, err := c.POST(endpoint, initForm)
+	if err != nil {
+		return nil, fmt.Errorf("initiating upload: %w", err)
+	}
+
+	var initResp struct {
+		UploadURL    string                 `json:"upload_url"`
+		UploadParams map[string]interface{} `json:"upload_params"`
+	}
+	if err := json.Unmarshal(initData, &initResp); err != nil {
+		return nil, fmt.Errorf("parsing upload init response: %w", err)
+	}
+	if initResp.UploadURL == "" {
+		return nil, fmt.Errorf("Canvas did not return an upload URL (response: %s)", string(initData))
+	}
+	c.debugf("Upload step 1 OK → upload_url: %s", initResp.UploadURL)
+
+	// Step 2: POST the file to upload_url. The upload_params must all come
+	// before the file field in the multipart body.
+	fileObj, err := c.postMultipartFile(initResp.UploadURL, initResp.UploadParams, "file", name, filePath)
+	if err != nil {
+		return nil, err
+	}
+
+	var result UploadResult
+	if err := json.Unmarshal(fileObj, &result); err != nil {
+		return nil, fmt.Errorf("parsing uploaded file object: %w (body: %s)", err, string(fileObj))
+	}
+	if result.ID == 0 {
+		return nil, fmt.Errorf("upload completed but Canvas returned no file ID (body: %s)", string(fileObj))
+	}
+	return &result, nil
+}
+
+// postMultipartFile posts a multipart form (params + file) to an arbitrary URL
+// and returns the final file-object JSON, following the confirmation redirect
+// Canvas may issue after a successful upload.
+func (c *Client) postMultipartFile(uploadURL string, params map[string]interface{}, fieldName, fileName, filePath string) ([]byte, error) {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("opening file: %w", err)
+	}
+	defer f.Close()
+
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	for k, v := range params {
+		w.WriteField(k, fmt.Sprintf("%v", v))
+	}
+	part, err := w.CreateFormFile(fieldName, fileName)
+	if err != nil {
+		return nil, fmt.Errorf("building multipart form: %w", err)
+	}
+	if _, err := io.Copy(part, f); err != nil {
+		return nil, fmt.Errorf("copying file into form: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		return nil, fmt.Errorf("finalizing form: %w", err)
+	}
+
+	c.debugf("Upload step 2: POST %d bytes to %s", buf.Len(), uploadURL)
+	req, err := http.NewRequest("POST", uploadURL, &buf)
+	if err != nil {
+		return nil, fmt.Errorf("creating upload request: %w", err)
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.Header.Set("Accept", "application/json")
+
+	// Use the no-redirect client so we can inspect a 3xx confirmation Location.
+	resp, err := c.noRedirectClient().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("uploading file: %w", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	c.debugf("Upload step 2 → status %d, %d bytes", resp.StatusCode, len(body))
+
+	// Step 3: follow the confirmation redirect if Canvas issued one.
+	if resp.StatusCode == 301 || resp.StatusCode == 302 || resp.StatusCode == 303 {
+		location := resp.Header.Get("Location")
+		c.debugf("Upload step 3: confirming at %s", location)
+		confirmReq, err := http.NewRequest("GET", location, nil)
+		if err != nil {
+			return nil, fmt.Errorf("creating confirm request: %w", err)
+		}
+		confirmReq.Header.Set("Accept", "application/json")
+		confirmResp, err := c.HTTPClient.Do(confirmReq)
+		if err != nil {
+			return nil, fmt.Errorf("confirming upload: %w", err)
+		}
+		confirmBody, _ := io.ReadAll(confirmResp.Body)
+		confirmResp.Body.Close()
+		c.debugf("Upload step 3 → status %d, %d bytes", confirmResp.StatusCode, len(confirmBody))
+		if confirmResp.StatusCode >= 400 {
+			return nil, fmt.Errorf("upload confirmation failed (%d): %s", confirmResp.StatusCode, string(confirmBody))
+		}
+		return confirmBody, nil
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("file upload failed (%d): %s", resp.StatusCode, string(body))
+	}
+	return body, nil
+}
+
+// mimeTypeFor returns a best-effort content type based on the file extension.
+func mimeTypeFor(name string) string {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".pdf":
+		return "application/pdf"
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".zip":
+		return "application/zip"
+	case ".txt", ".md":
+		return "text/plain"
+	case ".doc":
+		return "application/msword"
+	case ".docx":
+		return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	case ".ppt":
+		return "application/vnd.ms-powerpoint"
+	case ".pptx":
+		return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+	case ".xls":
+		return "application/vnd.ms-excel"
+	case ".xlsx":
+		return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	case ".csv":
+		return "text/csv"
+	case ".json":
+		return "application/json"
+	case ".go", ".py", ".js", ".ts", ".java", ".c", ".cpp", ".h":
+		return "text/plain"
+	default:
+		return ""
+	}
 }
 
 // --- Helper functions ---

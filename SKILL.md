@@ -19,6 +19,8 @@ Course grades: canvas-cli grades <course>
 Submission: canvas-cli submissions <course> <assign>
 Submit text: canvas-cli submit <course> <assign> --text "content"
 Submit URL: canvas-cli submit <course> <assign> --url <url>
+Submit file: canvas-cli submit <course> <assign> --file <path> (repeat --file for multiple attachments)
+Test file upload without submitting: canvas-cli submit <course> <assign> --file <path> --dry-run
 Todo: canvas-cli todo
 Upcoming: canvas-cli upcoming
 Missing: canvas-cli missing

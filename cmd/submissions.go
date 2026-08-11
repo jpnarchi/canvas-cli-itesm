@@ -107,7 +107,7 @@ func runSubmissions(args []string) {
 
 func runSubmit(args []string) {
 	if len(args) < 2 {
-		ui.Error("usage: canvas-cli submit <course_id> <assignment_id> --text \"content\" | --url <url>")
+		ui.Error("usage: canvas-cli submit <course_id> <assignment_id> --text \"content\" | --url <url> | --file <path> [--dry-run]")
 		os.Exit(1)
 	}
 
@@ -115,31 +115,62 @@ func runSubmit(args []string) {
 	assignID := args[1]
 	remaining := args[2:]
 
-	var submissionType, submissionBody, submissionURL string
+	var submissionBody, submissionURL string
+	var filePaths []string
+	var hasText, hasURL, dryRun bool
 
 	for i := 0; i < len(remaining); i++ {
 		switch remaining[i] {
 		case "--text":
 			if i+1 < len(remaining) {
-				submissionType = "online_text_entry"
+				hasText = true
 				submissionBody = remaining[i+1]
 				i++
 			}
 		case "--url":
 			if i+1 < len(remaining) {
-				submissionType = "online_url"
+				hasURL = true
 				submissionURL = remaining[i+1]
 				i++
 			}
 		case "--file":
-			ui.Error("File upload is not yet supported via CLI. Use --text or --url, or submit via Canvas web.")
-			os.Exit(1)
+			if i+1 < len(remaining) {
+				filePaths = append(filePaths, remaining[i+1])
+				i++
+			} else {
+				ui.Error("--file requires a path")
+				os.Exit(1)
+			}
+		case "--dry-run":
+			dryRun = true
 		}
 	}
 
-	if submissionType == "" {
-		ui.Error("specify submission type: --text \"content\" or --url <url>")
+	// Determine submission type. File uploads take precedence and can be
+	// validated without actually submitting via --dry-run.
+	if len(filePaths) > 0 {
+		if hasText || hasURL {
+			ui.Error("--file cannot be combined with --text or --url")
+			os.Exit(1)
+		}
+		runFileSubmit(courseID, assignID, filePaths, dryRun)
+		return
+	}
+
+	var submissionType string
+	switch {
+	case hasText:
+		submissionType = "online_text_entry"
+	case hasURL:
+		submissionType = "online_url"
+	default:
+		ui.Error("specify submission type: --text \"content\", --url <url>, or --file <path>")
 		os.Exit(1)
+	}
+
+	if dryRun {
+		ui.Warning("--dry-run only applies to --file uploads; nothing was submitted.")
+		return
 	}
 
 	form := url.Values{
@@ -177,5 +208,68 @@ func runSubmit(args []string) {
 		fmt.Printf("  %s  %s\n", ui.C(ui.Bold, "Time:"), ui.FormatDate(result.SubmittedAt))
 	}
 
+	fmt.Println()
+}
+
+// runFileSubmit uploads one or more attachments to a submission. Each file is
+// pushed into the user's Canvas storage first (via the assignment's file-upload
+// endpoint). When dryRun is true the flow stops after the uploads succeed and
+// the assignment is NOT submitted — this validates that attachments upload
+// correctly without turning anything in.
+func runFileSubmit(courseID, assignID string, filePaths []string, dryRun bool) {
+	uploadEndpoint := fmt.Sprintf("/courses/%s/assignments/%s/submissions/self/files", courseID, assignID)
+
+	fileIDs := make([]int, 0, len(filePaths))
+	for _, path := range filePaths {
+		ui.Info(fmt.Sprintf("Uploading %s ...", path))
+		res, err := client.UploadFile(uploadEndpoint, path)
+		if err != nil {
+			ui.Error(fmt.Sprintf("uploading %s: %s", path, err.Error()))
+			os.Exit(1)
+		}
+		ui.Success(fmt.Sprintf("Uploaded %s (file ID: %d)", res.DisplayName, res.ID))
+		fileIDs = append(fileIDs, res.ID)
+	}
+
+	if dryRun {
+		fmt.Println()
+		ui.Warning("Dry run — files uploaded to Canvas but the assignment was NOT submitted.")
+		fmt.Printf("  %s  %v\n", ui.C(ui.Bold, "Uploaded file IDs:"), fileIDs)
+		fmt.Printf("  %s\n", ui.C(ui.Dim, "Re-run without --dry-run to actually submit these files."))
+		fmt.Println()
+		return
+	}
+
+	form := url.Values{
+		"submission[submission_type]": {"online_upload"},
+	}
+	for _, id := range fileIDs {
+		form.Add("submission[file_ids][]", fmt.Sprintf("%d", id))
+	}
+
+	endpoint := fmt.Sprintf("/courses/%s/assignments/%s/submissions", courseID, assignID)
+	data, err := client.POST(endpoint, form)
+	if err != nil {
+		ui.Error(err.Error())
+		os.Exit(1)
+	}
+
+	if jsonOutput {
+		fmt.Println(string(data))
+		return
+	}
+
+	var result struct {
+		ID            int    `json:"id"`
+		WorkflowState string `json:"workflow_state"`
+		SubmittedAt   string `json:"submitted_at"`
+	}
+	json.Unmarshal(data, &result)
+
+	ui.Success(fmt.Sprintf("Submitted %d file(s)! (ID: %d)", len(fileIDs), result.ID))
+	fmt.Printf("  %s  %s\n", ui.C(ui.Bold, "Status:"), ui.StatusColor(result.WorkflowState))
+	if result.SubmittedAt != "" {
+		fmt.Printf("  %s  %s\n", ui.C(ui.Bold, "Time:"), ui.FormatDate(result.SubmittedAt))
+	}
 	fmt.Println()
 }

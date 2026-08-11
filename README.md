@@ -96,6 +96,8 @@ After the first successful login, your session is cached — subsequent commands
 | `canvas-cli submissions <course> <assign>` | View your submission, comments, and rubric |
 | `canvas-cli submit <course> <assign> --text "..."` | Submit text entry |
 | `canvas-cli submit <course> <assign> --url <url>` | Submit a URL |
+| `canvas-cli submit <course> <assign> --file <path>` | Attach a file (repeatable for multiple files) |
+| `canvas-cli submit <course> <assign> --file <path> --dry-run` | Upload the file(s) to Canvas without submitting the assignment |
 
 ### Productivity
 
