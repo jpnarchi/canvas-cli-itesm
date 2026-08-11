@@ -856,6 +856,40 @@ func (c *Client) saveSessionCookies() {
 	config.Save(c.Config)
 }
 
+// saveSessionCookiesIfChanged re-persists the cookie jar only when the rotating
+// canvas_session value differs from what's already stored, avoiding a config
+// write on every request while still capturing the server's session rotation.
+func (c *Client) saveSessionCookiesIfChanged() {
+	siteURL, err := url.Parse(c.SiteURL)
+	if err != nil || siteURL == nil {
+		return
+	}
+
+	var current string
+	for _, ck := range c.HTTPClient.Jar.Cookies(siteURL) {
+		if ck.Name == "canvas_session" {
+			current = ck.Value
+			break
+		}
+	}
+	if current == "" {
+		return
+	}
+
+	var saved string
+	for _, sc := range c.Config.Cookies {
+		if sc.Name == "canvas_session" {
+			saved = sc.Value
+			break
+		}
+	}
+	if current == saved {
+		return
+	}
+
+	c.saveSessionCookies()
+}
+
 func (c *Client) ensureLoggedIn() error {
 	if c.loggedIn {
 		return nil
@@ -946,6 +980,14 @@ func (c *Client) request(method, endpoint string, body io.Reader, contentType st
 	}
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(data))
+	}
+
+	// Canvas rotates the session cookie on every request (rolling session).
+	// Persist the refreshed jar so the next invocation presents the freshest
+	// cookie — this rolls the session's sliding idle window forward each time
+	// the CLI is used, instead of always replaying the original login cookie.
+	if c.loggedIn {
+		c.saveSessionCookiesIfChanged()
 	}
 
 	return data, nil
