@@ -149,6 +149,8 @@ func printUsage() {
 	fmt.Println("  submit <course> <assign> [opts]  Submit work")
 	fmt.Println("    --text \"content\"               Submit text")
 	fmt.Println("    --url <url>                    Submit a URL")
+	fmt.Println("    --file <path>                  Attach a file (repeatable)")
+	fmt.Println("    --dry-run                      Upload file(s) without submitting")
 	fmt.Println()
 	fmt.Println(ui.C(ui.Bold, "PRODUCTIVITY"))
 	fmt.Println("  todo                   Pending to-do items")
