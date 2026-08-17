@@ -129,6 +129,13 @@ After the first successful login, your session is cached — subsequent commands
 | `canvas-cli download <file_id>` | Download a file |
 | `canvas-cli download <file_id> -o ~/path` | Download to a specific path |
 
+Downloads use your authenticated session (session cookies), so files that
+require login — including attachments linked from assignment descriptions
+(e.g. `.../courses/<id>/files/<file_id>`) — download correctly instead of
+saving the SAML login page. If the session doesn't cover the file host, the
+command aborts with a clear error rather than writing an HTML login form to
+disk.
+
 ### Other
 
 | Command | Description |
