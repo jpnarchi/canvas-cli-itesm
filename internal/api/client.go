@@ -997,6 +997,58 @@ func (c *Client) GET(endpoint string) ([]byte, error) {
 	return c.request("GET", endpoint, nil, "")
 }
 
+// Download fetches a raw file URL using the authenticated session (cookie jar)
+// and streams the body into w. Canvas file download URLs require the session
+// cookies — a bare http.Get gets redirected to the SAML login page and returns
+// an HTML login form instead of the file. This follows redirects with the
+// authenticated client and guards against silently saving that login HTML.
+func (c *Client) Download(rawURL string, w io.Writer) (int64, string, error) {
+	if err := c.ensureLoggedIn(); err != nil {
+		return 0, "", err
+	}
+
+	req, err := http.NewRequest("GET", rawURL, nil)
+	if err != nil {
+		return 0, "", fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 canvas-cli/1.0")
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return 0, "", fmt.Errorf("download failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return 0, "", fmt.Errorf("download failed: HTTP %d", resp.StatusCode)
+	}
+
+	contentType := resp.Header.Get("Content-Type")
+
+	// If we landed on an HTML page it's almost certainly the SAML login form,
+	// meaning the session was not accepted for this host — treat as an error
+	// instead of writing a garbage HTML file to disk.
+	finalHost := ""
+	if resp.Request != nil && resp.Request.URL != nil {
+		finalHost = resp.Request.URL.Host
+	}
+	if strings.HasPrefix(contentType, "text/html") {
+		return 0, contentType, fmt.Errorf("got an HTML page instead of a file (likely a login redirect to %s) — session may not cover the download host", finalHost)
+	}
+
+	n, err := io.Copy(w, resp.Body)
+	if err != nil {
+		return n, contentType, fmt.Errorf("writing file: %w", err)
+	}
+
+	if c.loggedIn {
+		c.saveSessionCookiesIfChanged()
+	}
+
+	return n, contentType, nil
+}
+
 func (c *Client) POST(endpoint string, form url.Values) ([]byte, error) {
 	return c.request("POST", endpoint, strings.NewReader(form.Encode()), "application/x-www-form-urlencoded")
 }

@@ -3,8 +3,6 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 
@@ -118,14 +116,6 @@ func runDownload(args []string) {
 
 	ui.Info(fmt.Sprintf("Downloading %s (%s)...", file.DisplayName, formatSize(file.Size)))
 
-	// Download the file
-	resp, err := http.Get(file.URL)
-	if err != nil {
-		ui.Error("download failed: " + err.Error())
-		os.Exit(1)
-	}
-	defer resp.Body.Close()
-
 	out, err := os.Create(outputPath)
 	if err != nil {
 		ui.Error("creating file: " + err.Error())
@@ -133,9 +123,13 @@ func runDownload(args []string) {
 	}
 	defer out.Close()
 
-	written, err := io.Copy(out, resp.Body)
+	// Download using the authenticated session so Canvas serves the file
+	// instead of redirecting to the SAML login page.
+	written, _, err := client.Download(file.URL, out)
 	if err != nil {
-		ui.Error("writing file: " + err.Error())
+		out.Close()
+		os.Remove(outputPath)
+		ui.Error(err.Error())
 		os.Exit(1)
 	}
 
