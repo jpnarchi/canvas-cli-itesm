@@ -91,6 +91,14 @@ func Execute() {
 		runSubmissions(cmdArgs)
 	case "submit":
 		runSubmit(cmdArgs)
+	case "grade":
+		runGrade(cmdArgs)
+	case "announce":
+		runAnnounce(cmdArgs)
+	case "create-assignment":
+		runCreateAssignment(cmdArgs)
+	case "upload":
+		runUpload(cmdArgs)
 	case "todo":
 		runTodo()
 	case "upcoming":
@@ -146,11 +154,28 @@ func printUsage() {
 	fmt.Println("  grades                           Grades overview (all courses)")
 	fmt.Println("  grades <course>                  Grades for a course")
 	fmt.Println("  submissions <course> <assign>    View your submission")
+	fmt.Println("    --all                          List all students' submissions (teacher)")
+	fmt.Println("    --student <id>                 View one student's submission (teacher)")
 	fmt.Println("  submit <course> <assign> [opts]  Submit work")
 	fmt.Println("    --text \"content\"               Submit text")
 	fmt.Println("    --url <url>                    Submit a URL")
 	fmt.Println("    --file <path>                  Attach a file (repeatable)")
 	fmt.Println("    --dry-run                      Upload file(s) without submitting")
+	fmt.Println()
+	fmt.Println(ui.C(ui.Bold, "TEACHER"))
+	fmt.Println("  grade <course> <assign> <student> <score> [opts]  Grade a submission")
+	fmt.Println("    --comment \"text\"               Leave feedback with the grade")
+	fmt.Println("  announce <course> [opts]         Post a course announcement")
+	fmt.Println("    --title \"Title\"                Announcement title (required)")
+	fmt.Println("    --message \"Body\"               Announcement body (required)")
+	fmt.Println("  create-assignment <course> [opts]  Create an assignment")
+	fmt.Println("    --name \"Title\"                 Assignment name (required)")
+	fmt.Println("    --points <n>                   Points possible (default 100)")
+	fmt.Println("    --due <date>                   Due date (YYYY-MM-DD or ISO 8601)")
+	fmt.Println("    --description \"text\"           Instructions")
+	fmt.Println("    --types \"a,b\"                  Submission types (default upload,text)")
+	fmt.Println("    --publish                      Publish now (default: draft)")
+	fmt.Println("  upload <course> --file <path>    Upload material to course Files")
 	fmt.Println()
 	fmt.Println(ui.C(ui.Bold, "PRODUCTIVITY"))
 	fmt.Println("  todo                   Pending to-do items")
